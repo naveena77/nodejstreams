@@ -1,0 +1,55 @@
+import json
+import base64
+import boto3
+from typing import Any, Dict, Optional
+
+ddb = boto3.resource('dynamodb')
+table_posts = ddb.Table('Posts')
+table_topics = ddb.Table('Topics')
+
+def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    topic_id = event.get('queryStringParameters', {}).get('topicId')
+    count = int(event.get('queryStringParameters', {}).get('count', 16))
+
+    db_params = {
+        'TableName': 'Posts',
+        'Limit': count,
+        'KeyConditionExpression': 'topicid = :topicId',
+        'ExpressionAttributeValues': {
+            ':topicId': topic_id
+        }
+    }
+
+    next_page_key = event.get('queryStringParameters', {}).get('nextPageKey')
+    if next_page_key:
+        db_params['ExclusiveStartKey'] = json.loads(base64.b64decode(next_page_key))
+
+    result = table_posts.query(**db_params)
+
+    total_posts = 0
+    if 'Items' in result and len(result['Items']) > 0:
+        topics_result = table_topics.get_item(
+            Key={'topicId': topic_id},
+            ProjectionExpression='totalPosts'
+        )
+        total_posts = topics_result.get('Item', {}).get('totalPosts', 0)
+
+    pagination = {
+        'count': result.get('Count', 8),
+        'total': total_posts,
+    }
+
+    if 'LastEvaluatedKey' in result:
+        pagination['nextPageKey'] = base64.b64encode(json.dumps(result['LastEvaluatedKey']).encode()).decode()
+
+    response = {
+        'data': result.get('Items', []),
+        'pagination': pagination,
+    }
+
+    return {
+        'statusCode': 200,
+        'headers': {'Content-Type': 'application/json'},
+        'body': json.dumps(response),
+    }
+
